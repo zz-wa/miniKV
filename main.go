@@ -6,13 +6,16 @@ import (
 	"io"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 type entry struct {
-	Offset int64
-	Length int64
+	Offset   int64
+	Length   int64
+	ExpireAt int64
 }
 
 var noSQL = make(map[string]entry)
@@ -43,10 +46,20 @@ func main() {
 		l := strings.Split(line, " ")
 
 		if l[0] == "set" {
+			expireAt, err := strconv.ParseInt(l[3], 10, 64)
+			if err != nil {
+				offset += len(line) + 1
+				continue
+			}
+			if expireAt != 0 && time.Now().Unix() > expireAt {
+				offset += len(line) + 1
+				continue
+			}
 
 			noSQL[l[1]] = entry{
-				Offset: int64(offset),
-				Length: int64(len(line) + 1),
+				Offset:   int64(offset),
+				Length:   int64(len(line) + 1),
+				ExpireAt: expireAt,
 			}
 		}
 
@@ -64,6 +77,8 @@ func main() {
 	listen, err := net.Listen("tcp", ":8080")
 	WFile, _ = os.OpenFile("nosql.json", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	RFile, _ = os.OpenFile("nosql.json", os.O_RDONLY, 0644)
+	go CleanupExpired()
+
 	for {
 		conn, _ := listen.Accept()
 		go handleConn(conn)
@@ -71,6 +86,20 @@ func main() {
 
 }
 
+func CleanupExpired() {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		mu.Lock()
+		for key, en := range noSQL {
+			if en.ExpireAt != 0 && en.ExpireAt <= time.Now().Unix() {
+				delete(noSQL, key)
+				WFile.Write([]byte("del " + key + " \n"))
+			}
+		}
+		mu.Unlock()
+	}
+}
 func handleConn(conn net.Conn) {
 	reader := bufio.NewReader(conn)
 	for {
@@ -78,21 +107,31 @@ func handleConn(conn net.Conn) {
 		input = strings.TrimSpace(input)
 		in := strings.Split(input, " ")
 		if in[0] == "set" {
-			length := len(input)
+			var expiredAt int64
 
-			if len(in) < 3 {
+			if len(in) != 3 && len(in) != 4 {
 				conn.Write([]byte("wrong input" + "\n"))
 				continue
 			}
+			if len(in) == 4 {
+				ttl, err := strconv.ParseInt(in[3], 10, 64)
+				if err != nil {
+					conn.Write([]byte("wrong input" + "\n"))
+					continue
+				}
+				expiredAt = time.Now().Unix() + ttl
+			}
+			lines := fmt.Sprintf("set %s %s %d\n", in[1], in[2], expiredAt)
 			mu.Lock()
 			offset, _ := WFile.Seek(0, io.SeekEnd)
 			en := entry{
-				Offset: offset,
-				Length: int64(length + 1),
+				Offset:   offset,
+				Length:   int64(len(lines)),
+				ExpireAt: expiredAt,
 			}
 			noSQL[in[1]] = en
 
-			WFile.Write([]byte(input + "\n"))
+			WFile.Write([]byte(lines))
 
 			if Compaction("nosql.json", noSQL) {
 				WFile.Close()
@@ -116,6 +155,23 @@ func handleConn(conn net.Conn) {
 				mu.RUnlock()
 				continue
 			}
+			if en.ExpireAt != 0 && time.Now().Unix() > en.ExpireAt {
+				mu.RUnlock()
+				mu.Lock()
+				en2, ok2 := noSQL[in[1]]
+				if !ok2 {
+					conn.Write([]byte("key not found" + "\n"))
+					mu.Unlock()
+					continue
+				}
+				if ok2 && en2.ExpireAt != 0 && time.Now().Unix() > en2.ExpireAt {
+					delete(noSQL, in[1])
+					WFile.Write([]byte("del " + in[1] + " \n"))
+				}
+				conn.Write([]byte("key not found" + "\n"))
+				mu.Unlock()
+				continue
+			}
 
 			buf := make([]byte, en.Length)
 			_, err := RFile.ReadAt(buf, en.Offset)
@@ -124,7 +180,7 @@ func handleConn(conn net.Conn) {
 				mu.RUnlock()
 				continue
 			}
-			l := strings.Split(string(buf), " ")
+			l := strings.SplitN(string(buf), " ", 4)
 			if len(l) < 3 {
 				conn.Write([]byte("key not found" + "\n"))
 				mu.RUnlock()
@@ -143,6 +199,7 @@ func handleConn(conn net.Conn) {
 			}
 			mu.Lock()
 			delete(noSQL, in[1])
+			WFile.Write([]byte("del " + in[1] + " \n"))
 			WFile.Write([]byte(input + "\n"))
 			if Compaction("nosql.json", noSQL) {
 				WFile.Close()
@@ -152,9 +209,7 @@ func handleConn(conn net.Conn) {
 
 			}
 			mu.Unlock()
-
 		}
-
 	}
 
 }
@@ -171,7 +226,7 @@ func Compaction(filename string, nosql map[string]entry) bool {
 			if err != nil && err != io.EOF {
 				return false
 			}
-			l := strings.Split(string(buf), " ")
+			l := strings.SplitN(string(buf), " ", 3)
 			if len(l) < 3 {
 				continue
 			}
@@ -180,8 +235,9 @@ func Compaction(filename string, nosql map[string]entry) bool {
 			newOffset, _ := WFile.Seek(0, io.SeekEnd)
 
 			noSQL[key] = entry{
-				Offset: newOffset,
-				Length: int64(len(newLine)),
+				Offset:   newOffset,
+				Length:   int64(len(newLine)),
+				ExpireAt: en.ExpireAt,
 			}
 			WFile.Write([]byte(newLine))
 		}
