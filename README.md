@@ -22,6 +22,9 @@ set key value          # 永久存储
 set key value 60       # 60秒后过期
 get key                # 查询
 del key                # 删除
+begin                  # 开启事务
+commit                 # 提交事务
+rollback               # 回滚事务，撤销事务中的所有修改
 ```
 
 ## 实现了什么
@@ -39,6 +42,8 @@ del key                # 删除
 **并发安全**：`sync.RWMutex`，读并发执行，写独占。
 
 **TTL**：支持给 key 设置过期时间，惰性删除 + 后台定时清理双策略。
+
+**事务**：基于 undo-log 实现 `begin`/`commit`/`rollback`。事务中第一次修改某个 key 前备份原状态，`rollback` 时逐个还原，`commit` 直接清空备份；连接意外断开自动回滚未提交事务。
 
 ## 性能
 
