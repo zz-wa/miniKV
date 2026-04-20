@@ -27,24 +27,7 @@ func Set(key, value string, ttl int64) error {
 	if ttl > 0 {
 		expireAt = time.Now().Unix() + ttl
 	}
-	lines := fmt.Sprintf("set %s %s %d\n", key, value, expireAt)
-	mu.Lock()
-	defer mu.Unlock()
-
-	offset, _ := writeFile.Seek(0, io.SeekEnd)
-	_, err := writeFile.Write([]byte(lines))
-	if err != nil {
-		return err
-	}
-
-	index[key] = Entry{
-		Offset:   offset,
-		Length:   int64(len(lines)),
-		ExpireAt: expireAt,
-	}
-
-	Compaction("nosql.json")
-	return nil
+	return setInternal(key, value, expireAt)
 }
 
 func Get(key string) (string, bool) {
@@ -147,5 +130,53 @@ func Init(filename string) error {
 	writeFile, _ = os.OpenFile(filename, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	readFile, _ = os.OpenFile(filename, os.O_RDONLY, 0644)
 	go CleanupExpired()
+	return nil
+}
+
+func GetMeta(key string) (value string, expiredAt int64, exists bool) {
+	mu.RLock()
+	defer mu.RUnlock()
+	en, ok := index[key]
+	if !ok {
+		return "", 0, false
+	}
+	buf := make([]byte, en.Length)
+	_, err := readFile.ReadAt(buf, en.Offset)
+	if err != nil {
+		return "", 0, false
+	}
+
+	l := strings.SplitN(string(buf), " ", 4)
+	if len(l) < 4 {
+		return "", 0, false
+	}
+	if en.ExpireAt != 0 && time.Now().Unix() > en.ExpireAt {
+		exists = false
+		return "", 0, false
+	} else {
+		exists = true
+	}
+	return strings.TrimSpace(l[2]), en.ExpireAt, exists
+}
+
+func SetWithExpireAt(key, value string, expiredAt int64) error {
+	return setInternal(key, value, expiredAt)
+}
+
+func setInternal(key, value string, expiredAt int64) error {
+	mu.Lock()
+	defer mu.Unlock()
+	line := fmt.Sprintf("set %s %s %d\n", key, value, expiredAt)
+	offset, _ := writeFile.Seek(0, io.SeekEnd)
+	_, err := writeFile.Write([]byte(line))
+	if err != nil {
+		return err
+	}
+	index[key] = Entry{
+		Offset:   offset,
+		Length:   int64(len(line)),
+		ExpireAt: expiredAt,
+	}
+	Compaction("nosql.json")
 	return nil
 }
