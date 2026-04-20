@@ -9,9 +9,19 @@ import (
 )
 
 func HandleConn(conn net.Conn) {
+	defer conn.Close()
 	reader := bufio.NewReader(conn)
+	txn := &Txn{}
+	defer func() {
+		if txn.IsActive() {
+			txn.Rollback()
+		}
+	}()
 	for {
-		input, _ := reader.ReadString('\n')
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			return
+		}
 		input = strings.TrimSpace(input)
 		in := strings.Split(input, " ")
 		if in[0] == "set" {
@@ -23,7 +33,9 @@ func HandleConn(conn net.Conn) {
 			}
 			if len(in) == 4 {
 				ttl, _ = strconv.ParseInt(in[3], 10, 64)
-
+			}
+			if txn.IsActive() {
+				txn.RecordFirst(in[1])
 			}
 
 			store.Set(in[1], in[2], ttl)
@@ -52,6 +64,10 @@ func HandleConn(conn net.Conn) {
 				}
 				continue
 			}
+			if txn.IsActive() {
+				txn.RecordFirst(in[1])
+			}
+
 			err := store.Del(in[1])
 			if err != nil {
 				_, err2 := conn.Write([]byte("err\n"))
@@ -64,6 +80,34 @@ func HandleConn(conn net.Conn) {
 			if err != nil {
 				return
 			}
+		}
+		if in[0] == "begin" {
+			err := txn.Begin()
+			if err != nil {
+				conn.Write([]byte(err.Error() + "\n"))
+				continue
+			}
+			conn.Write([]byte("ok\n"))
+			continue
+		}
+		if in[0] == "commit" {
+			err := txn.Commit()
+			if err != nil {
+				conn.Write([]byte(err.Error() + "\n"))
+				continue
+			}
+			conn.Write([]byte("ok\n"))
+			continue
+		}
+		if in[0] == "rollback" {
+			err := txn.Rollback()
+			if err != nil {
+				conn.Write([]byte(err.Error() + "\n"))
+				continue
+			}
+			conn.Write([]byte("ok\n"))
+
+			continue
 		}
 	}
 
