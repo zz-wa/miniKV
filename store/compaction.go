@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/binary"
 	"fmt"
 	"io"
 	"os"
@@ -18,26 +19,25 @@ func Compaction(filename string) bool {
 	for key := range index {
 		en := index[key]
 		buf := make([]byte, en.Length)
-		_, err := readFile.ReadAt(buf, en.Offset)
+		_, err := readFile.ReadAt(buf, en.Offset+4)
 		if err != nil && err != io.EOF {
 			tmpFile.Close()
 			return false
 		}
 		l := strings.SplitN(string(buf), " ", 4)
-		if len(l) < 4 {
+		if len(l) < 3 {
 			continue
 		}
-
-		value := l[2]
-
-		newLine := fmt.Sprintf("set %s %s %d\n", key, value, en.ExpireAt)
+		body := []byte(fmt.Sprintf("set %s %s %d\n", key, l[2], en.ExpireAt))
+		header := make([]byte, 4)
+		binary.BigEndian.PutUint32(header, uint32(len(body)))
 		newOffset, _ := tmpFile.Seek(0, io.SeekEnd)
+		tmpFile.Write(append(header, body...))
 		index[key] = Entry{
 			Offset:   newOffset,
-			Length:   int64(len(newLine)),
+			Length:   int64(len(body)),
 			ExpireAt: en.ExpireAt,
 		}
-		tmpFile.Write([]byte(newLine))
 	}
 	writeFile.Close()
 	readFile.Close()

@@ -8,7 +8,7 @@ import (
 )
 
 func main() {
-	if err := store.Init("nosql.json"); err != nil {
+	if err := store.Open("nosql.json"); err != nil {
 		log.Fatal(err)
 	}
 	listen, err := net.Listen("tcp", ":8080")
