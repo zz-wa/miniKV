@@ -43,7 +43,8 @@ func (l *LRUCache) Put(key string, value string) {
 
 			delete(l.cache, lru.Value.(*Pair).key)
 			l.list.Remove(lru)
-			delete(index, lru.Value.(*Pair).key)
+
+			delete(GetShard(key).index, lru.Value.(*Pair).key)
 		}
 	}
 	pair := &Pair{key, value}

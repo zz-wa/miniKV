@@ -7,30 +7,22 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 )
 
-type Entry struct {
-	Offset   int64
-	Length   int64
-	ExpireAt int64
-}
+var Shards [16]*Shard
 
 var isCompaction atomic.Bool
-
-var index = make(map[string]Entry)
-
 var lruCache *LRUCache
 
 var writeFile *os.File
 var readFile *os.File
 
-var mu sync.RWMutex
-
 func Open(filename string) error {
-
+	for i := 0; i < 16; i++ {
+		Shards[i] = NewShard()
+	}
 	_, err := os.Stat("nosql.tmp")
 
 	if err == nil {
@@ -55,7 +47,9 @@ func Open(filename string) error {
 			offset, _ := strconv.ParseInt(l[1], 10, 64)
 			length, _ := strconv.ParseInt(l[2], 10, 64)
 			expireAt, _ := strconv.ParseInt(l[3], 10, 64)
-			index[l[0]] = Entry{
+			shard := GetShard(l[0])
+
+			shard.index[l[0]] = Entry{
 				Offset:   offset,
 				Length:   length,
 				ExpireAt: expireAt,
@@ -80,7 +74,8 @@ func Open(filename string) error {
 
 				expireAt, err := strconv.ParseInt(strings.TrimSpace(l[3]), 10, 64)
 				if err == nil && (expireAt == 0 || time.Now().Unix() <= expireAt) {
-					index[l[1]] = Entry{
+					shard := GetShard(l[0])
+					shard.index[l[1]] = Entry{
 						Offset:   int64(offset),
 						Length:   int64(bodyLen),
 						ExpireAt: expireAt,
@@ -88,7 +83,9 @@ func Open(filename string) error {
 				}
 			}
 			if len(l) >= 2 && l[0] == "del" {
-				delete(index, strings.TrimSpace(l[1]))
+				shard := GetShard(l[0])
+
+				delete(shard.index, strings.TrimSpace(l[1]))
 			}
 			if len(l) >= 1 && l[0] == "DONE" {
 			}
@@ -111,15 +108,16 @@ func Set(key, value string, ttl int64) error {
 }
 
 func setInternal(key, value string, expiredAt int64) error {
-	mu.Lock()
-	defer mu.Unlock()
+	shard := GetShard(key)
+	shard.Lock()
+	defer shard.Unlock()
 	header := make([]byte, 4)
 	body := []byte(fmt.Sprintf("set %s %s %d\n", key, value, expiredAt))
 	length := uint32(len(body))
 	binary.BigEndian.PutUint32(header, length)
 	offset, _ := writeFile.Seek(0, io.SeekEnd)
 	writeFile.Write(append(header, body...))
-	index[key] = Entry{
+	shard.index[key] = Entry{
 		Offset:   offset,
 		Length:   int64(len(body)),
 		ExpireAt: expiredAt,
@@ -130,19 +128,21 @@ func setInternal(key, value string, expiredAt int64) error {
 }
 
 func Get(key string) (string, bool) {
-	mu.RLock()
-	en, ok := index[key]
+	shard := GetShard(key)
+
+	shard.RLock()
+	en, ok := shard.index[key]
 	if !ok {
-		mu.RUnlock()
+		shard.RUnlock()
 		return "", false
 	}
 	if en.ExpireAt != 0 && time.Now().Unix() > en.ExpireAt {
-		mu.RUnlock()
+		shard.RUnlock()
 		deleteExpired(key)
 		return "", false
 	}
 	buf := make([]byte, en.Length)
-	mu.RUnlock()
+	shard.RUnlock()
 	_, err := readFile.ReadAt(buf, en.Offset+4)
 	if err != nil && err != io.EOF {
 		return "", false
@@ -158,8 +158,10 @@ func Get(key string) (string, bool) {
 }
 
 func Del(key string) error {
-	mu.Lock()
-	defer mu.Unlock()
+	shard := GetShard(key)
+
+	shard.Lock()
+	defer shard.Unlock()
 	body := []byte(fmt.Sprintf("del %s\n", key))
 	hearder := make([]byte, 4)
 	binary.BigEndian.PutUint32(hearder, uint32(len(body)))
@@ -167,16 +169,18 @@ func Del(key string) error {
 	if err != nil {
 		return err
 	}
-	delete(index, key)
+	delete(shard.index, key)
 	lruCache.Remove(key)
 	go Compaction("nosql.json")
 
 	return nil
 }
 func deleteExpired(key string) {
-	mu.Lock()
-	defer mu.Unlock()
-	en, ok := index[key]
+	shard := GetShard(key)
+
+	shard.Lock()
+	defer shard.Unlock()
+	en, ok := shard.index[key]
 	if !ok {
 		return
 	}
@@ -189,15 +193,17 @@ func deleteExpired(key string) {
 			return
 		}
 		lruCache.Remove(key)
-		delete(index, key)
+		delete(shard.index, key)
 	}
 	return
 }
 
 func GetMeta(key string) (value string, expiredAt int64, exists bool) {
-	mu.RLock()
-	defer mu.RUnlock()
-	en, ok := index[key]
+	shard := GetShard(key)
+
+	shard.RLock()
+	defer shard.RUnlock()
+	en, ok := shard.index[key]
 	if !ok {
 		return "", 0, false
 	}
