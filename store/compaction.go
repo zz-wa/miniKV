@@ -9,6 +9,11 @@ import (
 )
 
 func Compaction(filename string) bool {
+
+	if !isCompaction.CompareAndSwap(false, true) {
+		return false
+	}
+	defer isCompaction.Store(false)
 	fi, _ := os.Stat(filename)
 
 	if fi.Size() <= 100000 {
@@ -39,11 +44,26 @@ func Compaction(filename string) bool {
 			ExpireAt: en.ExpireAt,
 		}
 	}
+	done := []byte("DONE\n")
+	doneHeader := make([]byte, 4)
+	binary.BigEndian.PutUint32(doneHeader, uint32(len(done)))
+
+	tmpFile.Write(append(doneHeader, done...))
 	writeFile.Close()
 	readFile.Close()
 	tmpFile.Close()
-	os.Remove(filename)
 	os.Rename("nosql.tmp", filename)
+
+	hintFile, _ := os.OpenFile("nosql.hint", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	for key := range index {
+		body := fmt.Sprintf("%s %d %d %d\n", key, index[key].Offset, index[key].Length, index[key].ExpireAt)
+		hintFile.Write([]byte(body))
+	}
+
+	done = []byte("DONE\n")
+	hintFile.Write((done))
+
+	hintFile.Close()
 	writeFile, _ = os.OpenFile(filename, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	readFile, _ = os.OpenFile(filename, os.O_RDONLY, 0644)
 

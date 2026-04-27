@@ -45,6 +45,16 @@ rollback               # 回滚事务，撤销事务中的所有修改
 
 **事务**：基于 undo-log 实现 `begin`/`commit`/`rollback`。事务中第一次修改某个 key 前备份原状态，`rollback` 时逐个还原，`commit` 直接清空备份；连接意外断开自动回滚未提交事务。
 
+## 已知限制 / 待解决
+
+- **key 和 value 不能含空格**：磁盘记录格式用空格分隔字段，含空格的 key/value 会导致解析截断。完整修法是改为 length-prefix 二进制格式（`| key_sz | val_sz | expireAt | key | val |`），目前暂不支持。
+
+- **事务崩溃后原子性无法保证**：事务期间 Set/Del 立刻写磁盘，undo log 只在内存。崩溃后重启 replay 会使未 commit 的修改永久生效，违反 ACID 原子性。修法：事务期间修改缓存在内存，commit 时一次性写入；或写磁盘时加 BEGIN/COMMIT 标记，replay 时跳过没有 COMMIT 的事务。
+
+- **goroutine 无上限**：每个 TCP 连接起一个 goroutine，连接洪峰时可能 OOM。修法：加最大连接数限制或 goroutine pool。
+
+- **TTL 定期清理持全局锁**：`CleanupExpired` 扫描期间持 `mu.Lock()`，key 数量大时阻塞所有读写。修法：分批扫描，批间释放锁。
+
 ## 性能
 
 SET QPS: ~73,000 | GET QPS: ~208,000
