@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -18,6 +19,7 @@ var lruCache *LRUCache
 
 var writeFile *os.File
 var readFile *os.File
+var fileMu sync.RWMutex
 
 func Open(filename string) error {
 	for i := 0; i < 16; i++ {
@@ -74,7 +76,7 @@ func Open(filename string) error {
 
 				expireAt, err := strconv.ParseInt(strings.TrimSpace(l[3]), 10, 64)
 				if err == nil && (expireAt == 0 || time.Now().Unix() <= expireAt) {
-					shard := GetShard(l[0])
+					shard := GetShard(l[1])
 					shard.index[l[1]] = Entry{
 						Offset:   int64(offset),
 						Length:   int64(bodyLen),
@@ -83,7 +85,7 @@ func Open(filename string) error {
 				}
 			}
 			if len(l) >= 2 && l[0] == "del" {
-				shard := GetShard(l[0])
+				shard := GetShard(l[1])
 
 				delete(shard.index, strings.TrimSpace(l[1]))
 			}
@@ -109,6 +111,8 @@ func Set(key, value string, ttl int64) error {
 
 func setInternal(key, value string, expiredAt int64) error {
 	shard := GetShard(key)
+	fileMu.Lock()
+	defer fileMu.Unlock()
 	shard.Lock()
 	defer shard.Unlock()
 	header := make([]byte, 4)
@@ -128,15 +132,21 @@ func setInternal(key, value string, expiredAt int64) error {
 }
 
 func Get(key string) (string, bool) {
+	fileMu.RLock()
+
 	shard := GetShard(key)
 
 	shard.RLock()
 	en, ok := shard.index[key]
 	if !ok {
 		shard.RUnlock()
+		fileMu.RUnlock()
+
 		return "", false
 	}
 	if en.ExpireAt != 0 && time.Now().Unix() > en.ExpireAt {
+		fileMu.RUnlock()
+
 		shard.RUnlock()
 		deleteExpired(key)
 		return "", false
@@ -145,19 +155,26 @@ func Get(key string) (string, bool) {
 	shard.RUnlock()
 	_, err := readFile.ReadAt(buf, en.Offset+4)
 	if err != nil && err != io.EOF {
+		fileMu.RUnlock()
+
 		return "", false
 	}
 	l := strings.SplitN(string(buf), " ", 5)
 	if len(l) < 4 {
+		fileMu.RUnlock()
 
 		return "", false
 	}
 	lruCache.Get(key)
+	fileMu.RUnlock()
 
 	return strings.TrimSpace(l[2]), true
 }
 
 func Del(key string) error {
+	fileMu.Lock()
+	defer fileMu.Unlock()
+
 	shard := GetShard(key)
 
 	shard.Lock()
@@ -176,6 +193,9 @@ func Del(key string) error {
 	return nil
 }
 func deleteExpired(key string) {
+	fileMu.Lock()
+	defer fileMu.Unlock()
+
 	shard := GetShard(key)
 
 	shard.Lock()
@@ -199,6 +219,9 @@ func deleteExpired(key string) {
 }
 
 func GetMeta(key string) (value string, expiredAt int64, exists bool) {
+	fileMu.RLock()
+	defer fileMu.RUnlock()
+
 	shard := GetShard(key)
 
 	shard.RLock()

@@ -2,12 +2,14 @@ package store
 
 import (
 	"container/list"
+	"sync"
 )
 
 type LRUCache struct {
 	Capacity int
 	cache    map[string]*list.Element
 	list     *list.List
+	mu       sync.Mutex
 }
 
 type Pair struct {
@@ -23,15 +25,20 @@ func NewLRUCache(capacity int) *LRUCache {
 	}
 }
 
-func (c *LRUCache) Get(key string) string {
-	if elem, ok := c.cache[key]; ok {
-		c.list.MoveToFront(elem)
+func (l *LRUCache) Get(key string) string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if elem, ok := l.cache[key]; ok {
+		l.list.MoveToFront(elem)
 		return elem.Value.(*Pair).value
 	}
 	return ""
 }
 
 func (l *LRUCache) Put(key string, value string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
 	if elem, ok := l.cache[key]; ok {
 		elem.Value.(*Pair).value = value
 		l.list.MoveToFront(elem)
@@ -44,7 +51,6 @@ func (l *LRUCache) Put(key string, value string) {
 			delete(l.cache, lru.Value.(*Pair).key)
 			l.list.Remove(lru)
 
-			delete(GetShard(key).index, lru.Value.(*Pair).key)
 		}
 	}
 	pair := &Pair{key, value}
@@ -53,6 +59,9 @@ func (l *LRUCache) Put(key string, value string) {
 }
 
 func (l *LRUCache) Remove(key string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
 	if elem, ok := l.cache[key]; ok {
 		l.list.Remove(elem)
 		delete(l.cache, key)

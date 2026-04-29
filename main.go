@@ -16,9 +16,16 @@ func main() {
 		log.Fatal(err)
 	}
 
+	var sem = make(chan struct{}, 100)
+
 	for {
 		conn, _ := listen.Accept()
-		go server.HandleConn(conn)
+		sem <- struct{}{}
+		go func() {
+			defer func() { <-sem }()
+			server.HandleConn(conn)
+
+		}()
 	}
 
 }
