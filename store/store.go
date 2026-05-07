@@ -85,9 +85,10 @@ func Open(filename string) error {
 				}
 			}
 			if len(l) >= 2 && l[0] == "del" {
-				shard := GetShard(l[1])
+				key := strings.TrimSpace(l[1])
+				shard := GetShard(key)
 
-				delete(shard.index, strings.TrimSpace(l[1]))
+				delete(shard.index, key)
 			}
 			if len(l) >= 1 && l[0] == "DONE" {
 			}
