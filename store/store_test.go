@@ -56,6 +56,114 @@ func TestDelThenGetMissing(t *testing.T) {
 	}
 
 }
+func TestSetOverwrite(t *testing.T) {
+	setupTestStore(t)
+	oldValue := "value1"
+	newValue := "value2"
+	err := Set("key", oldValue, 0)
+	if err != nil {
+		t.Fatalf("set err: %v", err)
+	}
+
+	get1, ok := Get("key")
+	if !ok {
+		t.Fatalf("get ok = false, want true")
+	}
+	if get1 != oldValue {
+		t.Fatalf("got %q, want %q", get1, oldValue)
+	}
+
+	err = Set("key", newValue, 0)
+	if err != nil {
+		t.Fatalf("set err: %v", err)
+	}
+
+	get2, ok := Get("key")
+	if !ok {
+		t.Fatalf("get ok = false, want true")
+	}
+	if get2 != newValue {
+		t.Fatalf("got %q, want %q", get2, newValue)
+	}
+}
+func TestRecoverAfterSet(t *testing.T) {
+	setupTestStore(t)
+	value := "value"
+	err := Set("key", value, 0)
+	if err != nil {
+		t.Fatalf("set err: %v", err)
+	}
+	closeOld(t)
+	err = Open("nosql.json")
+	if err != nil {
+		t.Fatalf("reopen err: %v", err)
+	}
+	got, ok := Get("key")
+	if !ok {
+		t.Fatalf("get ok = false, want true")
+	}
+	if got != value {
+		t.Fatalf("got %q, want %q", got, value)
+	}
+}
+
+func TestRecoverAfterOverwrite(t *testing.T) {
+	setupTestStore(t)
+	oldValue := "value1"
+	newValue := "value2"
+	err := Set("key", oldValue, 0)
+	if err != nil {
+		t.Fatalf("set err: %v", err)
+	}
+	err = Set("key", newValue, 0)
+	if err != nil {
+		t.Fatalf("set err: %v", err)
+	}
+
+	closeOld(t)
+
+	err = Open("nosql.json")
+	if err != nil {
+		t.Fatalf("reopen err: %v", err)
+	}
+	got, ok := Get("key")
+	if !ok {
+		t.Fatalf("get ok = false, want true")
+	}
+	if got != newValue {
+		t.Fatalf("got %q, want %q", got, newValue)
+	}
+}
+
+func TestRecoverAfterDelete(t *testing.T) {
+	setupTestStore(t)
+	key := "key"
+	value := "value"
+	err := Set(key, value, 0)
+	if err != nil {
+		t.Fatalf("set err: %v", err)
+	}
+	err = Del(key)
+	if err != nil {
+		t.Fatalf("del err: %v", err)
+	}
+	got, ok := Get(key)
+	if ok {
+		t.Fatalf("after del, get ok = true, got %q, want false", got)
+	}
+	closeOld(t)
+	err = Open("nosql.json")
+	if err != nil {
+		t.Fatalf("reopen err: %v", err)
+	}
+	got, ok = Get(key)
+	if ok {
+		t.Fatalf("after reopen, get ok = true, got %q, want false", got)
+	}
+	if got != "" {
+		t.Fatalf("got %q, want \"\"", got)
+	}
+}
 
 func setupTestStore(t *testing.T) {
 	t.Helper()
@@ -70,10 +178,22 @@ func setupTestStore(t *testing.T) {
 		t.Fatalf("chdir err: %v", err)
 	}
 	t.Cleanup(func() {
+		closeOld(t)
 		_ = os.Chdir(oldWd)
 	})
 	err = Open("nosql.json")
 	if err != nil {
 		t.Fatalf("open err: %v", err)
+	}
+}
+func closeOld(t *testing.T) {
+	t.Helper()
+	if writeFile != nil {
+		_ = writeFile.Close()
+		writeFile = nil
+	}
+	if readFile != nil {
+		_ = readFile.Close()
+		readFile = nil
 	}
 }
