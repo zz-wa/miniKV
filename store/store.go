@@ -10,6 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 var Shards [16]*Shard
@@ -25,81 +27,21 @@ func Open(filename string) error {
 	for i := 0; i < 16; i++ {
 		Shards[i] = NewShard()
 	}
-	_, err := os.Stat("nosql.tmp")
-
-	if err == nil {
-		if tmpIsComplete("nosql.tmp") {
-			os.Rename("nosql.tmp", filename)
-		} else {
-			os.Remove("nosql.tmp")
-		}
-	}
+	recoverPendingCompaction(filename)
 
 	lruCache = NewLRUCache(1000)
 
-	switch HintIsComplete("nosql.hint") {
+	switch hintIsComplete("nosql.hint") {
 	case true:
-		hintdata, _ := os.ReadFile("nosql.hint")
-		for _, line := range strings.Split(string(hintdata), "\n") {
-			l := strings.SplitN(line, " ", 4)
-			if len(l) < 4 {
-				continue
-			}
-
-			offset, _ := strconv.ParseInt(l[1], 10, 64)
-			length, _ := strconv.ParseInt(l[2], 10, 64)
-			expireAt, _ := strconv.ParseInt(l[3], 10, 64)
-			shard := GetShard(l[0])
-
-			shard.index[l[0]] = Entry{
-				Offset:   offset,
-				Length:   length,
-				ExpireAt: expireAt,
-			}
-		}
+		loadIndexFromHint("nosql.hint")
 	case false:
-		os.Remove("nosql.hint")
-		data, _ := os.ReadFile(filename)
-		offset := 0
-		for offset < len(data) {
-			if offset+4 > len(data) {
-				break
-			}
-			bodyLen := int(binary.BigEndian.Uint32(data[offset : offset+4]))
-
-			if offset+4+bodyLen > len(data) {
-				break
-			}
-			body := string(data[offset+4 : offset+4+bodyLen])
-			l := strings.SplitN(body, " ", 4)
-			if len(l) >= 4 && l[0] == "set" {
-
-				expireAt, err := strconv.ParseInt(strings.TrimSpace(l[3]), 10, 64)
-				if err == nil && (expireAt == 0 || time.Now().Unix() <= expireAt) {
-					shard := GetShard(l[1])
-					shard.index[l[1]] = Entry{
-						Offset:   int64(offset),
-						Length:   int64(bodyLen),
-						ExpireAt: expireAt,
-					}
-				}
-			}
-			if len(l) >= 2 && l[0] == "del" {
-				key := strings.TrimSpace(l[1])
-				shard := GetShard(key)
-
-				delete(shard.index, key)
-			}
-			if len(l) >= 1 && l[0] == "DONE" {
-			}
-			offset += 4 + bodyLen
-		}
+		rebuildIndexFromLog(filename)
 	}
-
 	writeFile, _ = os.OpenFile(filename, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	readFile, _ = os.OpenFile(filename, os.O_RDONLY, 0644)
 	go CleanupExpired()
 	return nil
+
 }
 
 func Set(key, value string, ttl int64) error {
@@ -121,7 +63,10 @@ func setInternal(key, value string, expiredAt int64) error {
 	length := uint32(len(body))
 	binary.BigEndian.PutUint32(header, length)
 	offset, _ := writeFile.Seek(0, io.SeekEnd)
-	writeFile.Write(append(header, body...))
+	_, err := writeFile.Write(append(header, body...))
+	if err != nil {
+		return err
+	}
 	shard.index[key] = Entry{
 		Offset:   offset,
 		Length:   int64(len(body)),
@@ -275,7 +220,7 @@ func tmpIsComplete(filename string) bool {
 	return false
 }
 
-func HintIsComplete(filename string) bool {
+func hintIsComplete(filename string) bool {
 	data, _ := os.ReadFile(filename)
 	lines := strings.Split(string(data), "\n")
 	for _, line := range lines {
@@ -284,4 +229,95 @@ func HintIsComplete(filename string) bool {
 		}
 	}
 	return false
+}
+
+func recoverPendingCompaction(filename string) {
+	_, err := os.Stat("nosql.tmp")
+
+	if err == nil {
+		if tmpIsComplete("nosql.tmp") {
+			err = os.Rename("nosql.tmp", filename)
+			if err != nil {
+				zap.S().Fatal("rename tmp fail")
+			}
+		} else {
+			err := os.Remove("nosql.tmp")
+			if err != nil {
+				zap.S().Fatal("remove tmp fail")
+			}
+		}
+	}
+}
+
+func loadIndexFromHint(filename string) {
+	hintData, _ := os.ReadFile(filename)
+	for _, line := range strings.Split(string(hintData), "\n") {
+		l := strings.SplitN(line, " ", 4)
+		if len(l) < 4 {
+			continue
+		}
+
+		offset, err := strconv.ParseInt(l[1], 10, 64)
+		if err != nil {
+			zap.S().Fatal("parse offset fail")
+		}
+		length, err := strconv.ParseInt(l[2], 10, 64)
+		if err != nil {
+			zap.S().Fatal("parse length fail")
+		}
+		expireAt, err := strconv.ParseInt(l[3], 10, 64)
+		if err != nil {
+			zap.S().Fatal("parse expireAt fail")
+		}
+		shard := GetShard(l[0])
+
+		shard.index[l[0]] = Entry{
+			Offset:   offset,
+			Length:   length,
+			ExpireAt: expireAt,
+		}
+	}
+}
+
+func rebuildIndexFromLog(filename string) error {
+	err := os.Remove("nosql.hint")
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	data, _ := os.ReadFile(filename)
+	offset := 0
+	for offset < len(data) {
+		if offset+4 > len(data) {
+			break
+		}
+		bodyLen := int(binary.BigEndian.Uint32(data[offset : offset+4]))
+
+		if offset+4+bodyLen > len(data) {
+			break
+		}
+		body := string(data[offset+4 : offset+4+bodyLen])
+		l := strings.SplitN(body, " ", 4)
+		if len(l) >= 4 && l[0] == "set" {
+
+			expireAt, err := strconv.ParseInt(strings.TrimSpace(l[3]), 10, 64)
+			if err == nil && (expireAt == 0 || time.Now().Unix() <= expireAt) {
+				shard := GetShard(l[1])
+				shard.index[l[1]] = Entry{
+					Offset:   int64(offset),
+					Length:   int64(bodyLen),
+					ExpireAt: expireAt,
+				}
+			}
+		}
+		if len(l) >= 2 && l[0] == "del" {
+			key := strings.TrimSpace(l[1])
+			shard := GetShard(key)
+
+			delete(shard.index, key)
+		}
+		if len(l) >= 1 && l[0] == "DONE" {
+		}
+		offset += 4 + bodyLen
+	}
+	return nil
 }
