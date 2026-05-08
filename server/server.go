@@ -42,10 +42,10 @@ func HandleConn(conn net.Conn) {
 		}
 	}
 }
+
 func handleSet(conn net.Conn, in []string, txn *Txn) {
 	var ttl int64
-
-	if len(in) != 3 && len(in) != 4 {
+	if !validateSetArgs(in) {
 		conn.Write([]byte("wrong input\n"))
 		return
 	}
@@ -58,12 +58,15 @@ func handleSet(conn net.Conn, in []string, txn *Txn) {
 
 	err := store.Set(in[1], in[2], ttl)
 	reply(conn, err)
+
 }
+
 func handleGet(conn net.Conn, in []string) {
-	if len(in) < 2 {
+	if !validateArity(2, in) {
 		conn.Write([]byte("wrong input\n"))
 		return
 	}
+
 	value, ok := store.Get(in[1])
 	if !ok {
 		conn.Write([]byte("key not found\n"))
@@ -73,10 +76,11 @@ func handleGet(conn net.Conn, in []string) {
 
 }
 func handleDel(conn net.Conn, in []string, txn *Txn) {
-	if len(in) < 2 {
+	if !validateArity(2, in) {
 		conn.Write([]byte("wrong input\n"))
 		return
 	}
+
 	if txn.IsActive() {
 		txn.RecordFirst(in[1])
 	}
@@ -106,4 +110,15 @@ func reply(conn net.Conn, err error) {
 		return
 	}
 	conn.Write([]byte("ok\n"))
+}
+
+func validateArity(arity int, args []string) bool {
+	argNum := len(args)
+	if arity >= 0 {
+		return argNum == arity
+	}
+	return argNum >= -arity
+}
+func validateSetArgs(in []string) bool {
+	return len(in) == 3 || len(in) == 4
 }
