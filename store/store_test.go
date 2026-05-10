@@ -93,7 +93,9 @@ func TestRecoverAfterSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("set err: %v", err)
 	}
-	closeOld(t)
+	if err := Close(); err != nil {
+		t.Fatalf("close err: %v", err)
+	}
 	err = Open("nosql.json")
 	if err != nil {
 		t.Fatalf("reopen err: %v", err)
@@ -119,8 +121,9 @@ func TestRecoverAfterOverwrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("set err: %v", err)
 	}
-
-	closeOld(t)
+	if err := Close(); err != nil {
+		t.Fatalf("close err: %v", err)
+	}
 
 	err = Open("nosql.json")
 	if err != nil {
@@ -151,7 +154,9 @@ func TestRecoverAfterDelete(t *testing.T) {
 	if ok {
 		t.Fatalf("after del, get ok = true, got %q, want false", got)
 	}
-	closeOld(t)
+	if err := Close(); err != nil {
+		t.Fatalf("close err: %v", err)
+	}
 	err = Open("nosql.json")
 	if err != nil {
 		t.Fatalf("reopen err: %v", err)
@@ -178,22 +183,13 @@ func setupTestStore(t *testing.T) {
 		t.Fatalf("chdir err: %v", err)
 	}
 	t.Cleanup(func() {
-		closeOld(t)
+		if err := Close(); err != nil {
+			t.Errorf("close err: %v", err)
+		}
 		_ = os.Chdir(oldWd)
 	})
 	err = Open("nosql.json")
 	if err != nil {
 		t.Fatalf("open err: %v", err)
-	}
-}
-func closeOld(t *testing.T) {
-	t.Helper()
-	if writeFile != nil {
-		_ = writeFile.Close()
-		writeFile = nil
-	}
-	if readFile != nil {
-		_ = readFile.Close()
-		readFile = nil
 	}
 }

@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -35,10 +36,27 @@ func Open(filename string) error {
 	case true:
 		loadIndexFromHint("nosql.hint")
 	case false:
-		rebuildIndexFromLog(filename)
+		err := rebuildIndexFromLog(filename)
+		if err != nil {
+			return err
+		}
 	}
-	writeFile, _ = os.OpenFile(filename, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	readFile, _ = os.OpenFile(filename, os.O_RDONLY, 0644)
+
+	wf, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return err
+	}
+	rf, err := os.OpenFile(filename, os.O_RDONLY, 0644)
+	if err != nil {
+		closeErr := wf.Close()
+		if closeErr != nil {
+			return errors.Join(err, closeErr)
+		}
+		return err
+	}
+	writeFile = wf
+	readFile = rf
+
 	go CleanupExpired()
 	return nil
 
@@ -320,4 +338,21 @@ func rebuildIndexFromLog(filename string) error {
 		offset += 4 + bodyLen
 	}
 	return nil
+}
+
+func Close() error {
+	fileMu.Lock()
+	defer fileMu.Unlock()
+
+	var err error
+	if writeFile != nil {
+		err = errors.Join(err, writeFile.Close())
+		writeFile = nil
+	}
+
+	if readFile != nil {
+		err = errors.Join(err, readFile.Close())
+		readFile = nil
+	}
+	return err
 }
