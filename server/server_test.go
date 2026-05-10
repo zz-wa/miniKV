@@ -1,6 +1,7 @@
 package server
 
 import (
+	"reflect"
 	"testing"
 )
 
@@ -83,6 +84,48 @@ func TestValidateArity(t *testing.T) {
 			got := validateArity(tt.arity, tt.args)
 			if got != tt.want {
 				t.Fatalf("validateArity(%d, %v) = %v, want %v", tt.arity, tt.args, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseCommand(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  []string
+	}{
+		{
+			name:  "valid_command",
+			input: "set key value",
+			want:  []string{"set", "key", "value"},
+		},
+		{
+			name:  "set_with_multiple_spaces",
+			input: "set  key  value",
+			want:  []string{"set", "key", "value"},
+		},
+		{
+			name:  "get_with_leading_and_trailing_space",
+			input: "   get  key    ",
+			want:  []string{"get", "key"},
+		},
+		{
+			name:  "empty_command",
+			input: "",
+			want:  []string{},
+		},
+		{
+			name:  "spaces_only",
+			input: "    ",
+			want:  []string{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseCommand(tt.input)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("parseCommand(%q)=%v ,want %v", tt.input, got, tt.want)
 			}
 		})
 	}

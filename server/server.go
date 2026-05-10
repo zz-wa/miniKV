@@ -22,8 +22,10 @@ func HandleConn(conn net.Conn) {
 		if err != nil {
 			return
 		}
-		input = strings.TrimSpace(input)
-		in := strings.Split(input, " ")
+		in := parseCommand(input)
+		if len(in) == 0 {
+			continue
+		}
 		switch in[0] {
 		case "set":
 			handleSet(conn, in, txn)
@@ -41,6 +43,10 @@ func HandleConn(conn net.Conn) {
 			conn.Write([]byte("unknown command\n"))
 		}
 	}
+}
+
+func parseCommand(input string) []string {
+	return strings.Fields(input)
 }
 
 func handleSet(conn net.Conn, in []string, txn *Txn) {
