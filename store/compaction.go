@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 )
 
 func Compaction(filename string) bool {
@@ -32,34 +31,36 @@ func Compaction(filename string) bool {
 		shard.Lock()
 
 		for key, en := range shard.index {
-			buf := make([]byte, en.Length)
-			_, err := readFile.ReadAt(buf, en.Offset+4)
+			buf := make([]byte, lengthPrefixSize+en.Length)
+			_, err := readFile.ReadAt(buf, en.Offset)
 			if err != nil && err != io.EOF {
 				shard.Unlock()
-				err := tmpFile.Close()
-				if err != nil {
-					return false
-				}
+				_ = tmpFile.Close()
 				return false
 			}
-			l := strings.SplitN(string(buf), " ", 4)
-			if len(l) < 3 {
+			record, err := decodeRecord(buf)
+			if err != nil {
 				continue
 			}
-			body := []byte(fmt.Sprintf("set %s %s %d\n", key, l[2], en.ExpireAt))
-			header := make([]byte, 4)
-			binary.BigEndian.PutUint32(header, uint32(len(body)))
-			newOffset, _ := tmpFile.Seek(0, io.SeekEnd)
-			_, err = tmpFile.Write(append(header, body...))
+			if record.Op != OpSet || record.Key != key {
+				continue
+			}
+
+			newRecord := NewSetRecord(key, record.Value, record.ExpireAt)
+
+			data := encodeRecord(newRecord)
+
+			NewOffset, _ := tmpFile.Seek(0, io.SeekEnd)
+			_, err = tmpFile.Write(data)
 			if err != nil {
-				shard.Unlock()
-				return false
+				continue
 			}
 			shard.index[key] = Entry{
-				Offset:   newOffset,
-				Length:   int64(len(body)),
+				Offset:   NewOffset,
+				Length:   int64(recordBodyLen(newRecord)),
 				ExpireAt: en.ExpireAt,
 			}
+
 		}
 		shard.Unlock()
 	}

@@ -3,7 +3,6 @@ package store
 import (
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"strconv"
@@ -76,18 +75,15 @@ func setInternal(key, value string, expiredAt int64) error {
 	defer fileMu.Unlock()
 	shard.Lock()
 	defer shard.Unlock()
-	header := make([]byte, 4)
-	body := []byte(fmt.Sprintf("set %s %s %d\n", key, value, expiredAt))
-	length := uint32(len(body))
-	binary.BigEndian.PutUint32(header, length)
-	offset, _ := writeFile.Seek(0, io.SeekEnd)
-	_, err := writeFile.Write(append(header, body...))
+
+	record := NewSetRecord(key, value, expiredAt)
+	offset, bodayLen, err := appendRecord(record)
 	if err != nil {
 		return err
 	}
 	shard.index[key] = Entry{
 		Offset:   offset,
-		Length:   int64(len(body)),
+		Length:   bodayLen,
 		ExpireAt: expiredAt,
 	}
 	lruCache.Put(key, value)
@@ -115,24 +111,28 @@ func Get(key string) (string, bool) {
 		deleteExpired(key)
 		return "", false
 	}
-	buf := make([]byte, en.Length)
+	buf := make([]byte, lengthPrefixSize+en.Length)
 	shard.RUnlock()
-	_, err := readFile.ReadAt(buf, en.Offset+4)
+
+	_, err := readFile.ReadAt(buf, int64(en.Offset))
 	if err != nil && err != io.EOF {
 		fileMu.RUnlock()
-
 		return "", false
 	}
-	l := strings.SplitN(string(buf), " ", 5)
-	if len(l) < 4 {
+
+	record, err := decodeRecord(buf)
+	if err != nil && err != io.EOF {
 		fileMu.RUnlock()
-
 		return "", false
 	}
+	if record.Op != OpSet || record.Key != key {
+		fileMu.RUnlock()
+		return "", false
+	}
+
 	lruCache.Get(key)
 	fileMu.RUnlock()
-
-	return strings.TrimSpace(l[2]), true
+	return record.Value, true
 }
 
 func Del(key string) error {
@@ -143,10 +143,8 @@ func Del(key string) error {
 
 	shard.Lock()
 	defer shard.Unlock()
-	body := []byte(fmt.Sprintf("del %s\n", key))
-	hearder := make([]byte, 4)
-	binary.BigEndian.PutUint32(hearder, uint32(len(body)))
-	_, err := writeFile.Write(append(hearder, body...))
+	record := NewDelRecord(key)
+	_, _, err := appendRecord(record)
 	if err != nil {
 		return err
 	}
@@ -169,10 +167,8 @@ func deleteExpired(key string) {
 		return
 	}
 	if en.ExpireAt != 0 && en.ExpireAt < time.Now().Unix() {
-		body := []byte(fmt.Sprintf("del %s\n", key))
-		hearder := make([]byte, 4)
-		binary.BigEndian.PutUint32(hearder, uint32(len(body)))
-		_, err := writeFile.Write(append(hearder, body...))
+		record := NewDelRecord(key)
+		_, _, err := appendRecord(record)
 		if err != nil {
 			return
 		}
@@ -194,23 +190,25 @@ func GetMeta(key string) (value string, expiredAt int64, exists bool) {
 	if !ok {
 		return "", 0, false
 	}
-	buf := make([]byte, en.Length)
-	_, err := readFile.ReadAt(buf, en.Offset+4)
+	buf := make([]byte, lengthPrefixSize+en.Length)
+
+	_, err := readFile.ReadAt(buf, en.Offset)
 	if err != nil {
 		return "", 0, false
 	}
 
-	l := strings.SplitN(string(buf), " ", 4)
-	if len(l) < 4 {
+	record, err := decodeRecord(buf)
+	if err != nil && err != io.EOF {
 		return "", 0, false
 	}
-	if en.ExpireAt != 0 && time.Now().Unix() > en.ExpireAt {
-		exists = false
+	if record.Op != OpSet || record.Key != key {
 		return "", 0, false
-	} else {
-		exists = true
 	}
-	return strings.TrimSpace(l[2]), en.ExpireAt, exists
+	if record.ExpireAt != 0 && time.Now().Unix() > record.ExpireAt {
+		return "", 0, false
+	}
+
+	return record.Value, record.ExpireAt, true
 }
 
 func SetWithExpireAt(key, value string, expiredAt int64) error {
@@ -305,37 +303,35 @@ func rebuildIndexFromLog(filename string) error {
 	data, _ := os.ReadFile(filename)
 	offset := 0
 	for offset < len(data) {
-		if offset+4 > len(data) {
+		if offset+lengthPrefixSize > len(data) {
 			break
 		}
-		bodyLen := int(binary.BigEndian.Uint32(data[offset : offset+4]))
-
-		if offset+4+bodyLen > len(data) {
+		bodyLen := int(binary.BigEndian.Uint32(data[offset : offset+lengthPrefixSize]))
+		end := offset + lengthPrefixSize + bodyLen
+		if end > len(data) {
 			break
 		}
-		body := string(data[offset+4 : offset+4+bodyLen])
-		l := strings.SplitN(body, " ", 4)
-		if len(l) >= 4 && l[0] == "set" {
 
-			expireAt, err := strconv.ParseInt(strings.TrimSpace(l[3]), 10, 64)
-			if err == nil && (expireAt == 0 || time.Now().Unix() <= expireAt) {
-				shard := GetShard(l[1])
-				shard.index[l[1]] = Entry{
+		record, err := decodeRecord(data[offset:end])
+		if err != nil {
+			break
+		}
+
+		switch record.Op {
+		case OpSet:
+			if record.ExpireAt == 0 || time.Now().Unix() <= record.ExpireAt {
+				shard := GetShard(record.Key)
+				shard.index[record.Key] = Entry{
 					Offset:   int64(offset),
 					Length:   int64(bodyLen),
-					ExpireAt: expireAt,
+					ExpireAt: record.ExpireAt,
 				}
 			}
+		case OpDel:
+			shard := GetShard(record.Key)
+			delete(shard.index, record.Key)
 		}
-		if len(l) >= 2 && l[0] == "del" {
-			key := strings.TrimSpace(l[1])
-			shard := GetShard(key)
-
-			delete(shard.index, key)
-		}
-		if len(l) >= 1 && l[0] == "DONE" {
-		}
-		offset += 4 + bodyLen
+		offset = end
 	}
 	return nil
 }
@@ -355,4 +351,18 @@ func Close() error {
 		readFile = nil
 	}
 	return err
+}
+
+func appendRecord(record Record) (offset int64, length int64, err error) {
+	data := encodeRecord(record)
+
+	offset, err = writeFile.Seek(0, io.SeekEnd)
+	if err != nil {
+		return 0, 0, err
+	}
+	_, err = writeFile.Write(data)
+	if err != nil {
+		return 0, 0, err
+	}
+	return offset, int64(recordBodyLen(record)), nil
 }
