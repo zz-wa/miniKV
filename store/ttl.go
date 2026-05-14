@@ -11,6 +11,10 @@ func CleanupExpired() {
 			for key, en := range shrads.index {
 				if en.ExpireAt != 0 && en.ExpireAt <= time.Now().Unix() {
 					delete(shrads.index, key)
+					err := Del(key)
+					if err != nil {
+						return
+					}
 				}
 			}
 			shrads.Unlock()

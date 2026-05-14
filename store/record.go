@@ -32,7 +32,7 @@ type Record struct {
 
 func NewSetRecord(key, value string, expireAt int64) Record {
 	return Record{
-		Op:       1,
+		Op:       OpSet,
 		Key:      key,
 		Value:    value,
 		ExpireAt: expireAt,
@@ -41,7 +41,7 @@ func NewSetRecord(key, value string, expireAt int64) Record {
 
 func NewDelRecord(key string) Record {
 	return Record{
-		Op:       2,
+		Op:       OpDel,
 		Key:      key,
 		Value:    "",
 		ExpireAt: 0,
@@ -107,6 +107,11 @@ func decodeRecord(data []byte) (Record, error) {
 	}
 
 	op := OpType(body[0])
+
+	if op != OpSet && op != OpDel {
+		return Record{}, errors.New("invalid op")
+	}
+
 	keyLen := int(binary.BigEndian.Uint32(body[1:5]))
 	valueLen := int(binary.BigEndian.Uint32(body[5:9]))
 	expiredAt := int64(binary.BigEndian.Uint64(body[9:17]))

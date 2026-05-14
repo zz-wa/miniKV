@@ -27,7 +27,7 @@ func Open(filename string) error {
 	for i := 0; i < 16; i++ {
 		Shards[i] = NewShard()
 	}
-	recoverPendingCompaction(filename)
+	recoverPendingCompaction()
 
 	lruCache = NewLRUCache(1000)
 
@@ -70,6 +70,9 @@ func Set(key, value string, ttl int64) error {
 }
 
 func setInternal(key, value string, expiredAt int64) error {
+	if err := validateKey(key); err != nil {
+		return err
+	}
 	shard := GetShard(key)
 	fileMu.Lock()
 	defer fileMu.Unlock()
@@ -92,6 +95,9 @@ func setInternal(key, value string, expiredAt int64) error {
 }
 
 func Get(key string) (string, bool) {
+	if err := validateKey(key); err != nil {
+		return "", false
+	}
 	fileMu.RLock()
 
 	shard := GetShard(key)
@@ -136,6 +142,9 @@ func Get(key string) (string, bool) {
 }
 
 func Del(key string) error {
+	if err := validateKey(key); err != nil {
+		return err
+	}
 	fileMu.Lock()
 	defer fileMu.Unlock()
 
@@ -179,6 +188,9 @@ func deleteExpired(key string) {
 }
 
 func GetMeta(key string) (value string, expiredAt int64, exists bool) {
+	if err := validateKey(key); err != nil {
+		return "", 0, false
+	}
 	fileMu.RLock()
 	defer fileMu.RUnlock()
 
@@ -247,20 +259,13 @@ func hintIsComplete(filename string) bool {
 	return false
 }
 
-func recoverPendingCompaction(filename string) {
+func recoverPendingCompaction() {
 	_, err := os.Stat("nosql.tmp")
 
 	if err == nil {
-		if tmpIsComplete("nosql.tmp") {
-			err = os.Rename("nosql.tmp", filename)
-			if err != nil {
-				zap.S().Fatal("rename tmp fail")
-			}
-		} else {
-			err := os.Remove("nosql.tmp")
-			if err != nil {
-				zap.S().Fatal("remove tmp fail")
-			}
+		err := os.Remove("nosql.tmp")
+		if err != nil {
+			zap.S().Fatal("remove nosql.tmp fail")
 		}
 	}
 }
@@ -365,4 +370,15 @@ func appendRecord(record Record) (offset int64, length int64, err error) {
 		return 0, 0, err
 	}
 	return offset, int64(recordBodyLen(record)), nil
+}
+
+func validateKey(key string) error {
+	if key == "" {
+		return errors.New("key is empty")
+	}
+
+	if strings.ContainsAny(key, " \t\r\n") {
+		return errors.New("invalid key")
+	}
+	return nil
 }

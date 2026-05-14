@@ -1,7 +1,6 @@
 package store
 
 import (
-	"encoding/binary"
 	"fmt"
 	"io"
 	"os"
@@ -65,14 +64,6 @@ func Compaction(filename string) bool {
 		shard.Unlock()
 	}
 
-	done := []byte("DONE\n")
-	doneHeader := make([]byte, 4)
-	binary.BigEndian.PutUint32(doneHeader, uint32(len(done)))
-
-	_, err = tmpFile.Write(append(doneHeader, done...))
-	if err != nil {
-		return false
-	}
 	err = tmpFile.Close()
 	if err != nil {
 		return false
@@ -98,7 +89,7 @@ func Compaction(filename string) bool {
 		shard.Unlock()
 	}
 
-	done = []byte("DONE\n")
+	done := []byte("DONE\n")
 	_, err = hintFile.Write(done)
 	if err != nil {
 		return false
