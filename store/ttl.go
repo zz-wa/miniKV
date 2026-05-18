@@ -6,18 +6,24 @@ func CleanupExpired() {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
-		for _, shrads := range Shards {
-			shrads.Lock()
-			for key, en := range shrads.index {
-				if en.ExpireAt != 0 && en.ExpireAt <= time.Now().Unix() {
-					delete(shrads.index, key)
-					err := Del(key)
-					if err != nil {
-						return
-					}
-				}
+		for _, shards := range Shards {
+			cleanupShard(shards)
+		}
+	}
+}
+
+func cleanupShard(s *Shard) {
+	fileMu.Lock()
+	defer fileMu.Unlock()
+	s.Lock()
+	defer s.Unlock()
+	for key, en := range s.index {
+		if en.ExpireAt != 0 && en.ExpireAt <= time.Now().Unix() {
+			err := delLocked(s, key)
+			if err != nil {
+				continue
 			}
-			shrads.Unlock()
+
 		}
 	}
 }

@@ -152,17 +152,28 @@ func Del(key string) error {
 
 	shard.Lock()
 	defer shard.Unlock()
+	err := delLocked(shard, key)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func delLocked(shard *Shard, key string) error {
 	record := NewDelRecord(key)
+
 	_, _, err := appendRecord(record)
 	if err != nil {
 		return err
 	}
 	delete(shard.index, key)
+
 	lruCache.Remove(key)
 	go Compaction("nosql.json")
-
 	return nil
+
 }
+
 func deleteExpired(key string) {
 	fileMu.Lock()
 	defer fileMu.Unlock()
@@ -227,6 +238,7 @@ func SetWithExpireAt(key, value string, expiredAt int64) error {
 	return setInternal(key, value, expiredAt)
 }
 
+/*
 func tmpIsComplete(filename string) bool {
 	data, _ := os.ReadFile(filename)
 	offset := 0
@@ -247,6 +259,7 @@ func tmpIsComplete(filename string) bool {
 	}
 	return false
 }
+*/
 
 func hintIsComplete(filename string) bool {
 	data, _ := os.ReadFile(filename)
