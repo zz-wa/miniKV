@@ -1,9 +1,12 @@
-
 # miniKV
 
-一个用 Go 从零实现的 KV 存储引擎。
+一个用 Go 从零实现的 KV 存储引擎练习项目。
+
+当前版本重点实现了 append-only WAL、内存索引、TTL、compaction、hint 文件、分片锁和简单 TCP 协议。代码仍然偏学习性质，README 里的“已知限制”部分会保留当前还没处理完的边界问题。
 
 ## 运行
+
+启动服务：
 
 ```bash
 go run main.go
@@ -15,56 +18,150 @@ go run main.go
 nc localhost 8080
 ```
 
+默认监听：
+
+```text
+127.0.0.1:8080
+```
+
+数据文件默认写在当前工作目录：
+
+```text
+nosql.json
+nosql.hint
+nosql.tmp
+```
+
 ## 支持的命令
 
-```
+```text
 set key value          # 永久存储
-set key value 60       # 60秒后过期
+set key value 60       # 60 秒后过期
 get key                # 查询
 del key                # 删除
 begin                  # 开启事务
 commit                 # 提交事务
-rollback               # 回滚事务，撤销事务中的所有修改
+rollback               # 回滚事务，撤销事务中的修改
 ```
 
-## 实现了什么
+示例：
 
-**WAL（Write-Ahead Log）**：每次写操作只追加一条记录，不覆盖整个文件，写入压力小。
+```text
+set name alice
+ok
+get name
+alice
+del name
+ok
+get name
+key not found
+```
 
-**Length-prefix 磁盘格式**：每条记录前 4 字节用大端写 body 长度，再写 body。重放时按长度切片，record 边界不再依赖换行符，单条记录的 value 可以安全包含 `\n`。
+## 当前实现
 
-**Compaction**：WAL 超过阈值（100 KB）异步触发压缩，重写一份只包含最新值的 tmp 文件，结尾写 `DONE` 标记后原子 rename 替换。
+**Append-only WAL**
 
-**崩溃恢复**：启动时检测 `nosql.tmp` 是否包含 `DONE` 标记，完整就替换主文件，否则丢弃。保证压缩中途崩溃也不会污染数据。
+`Set` 和 `Del` 都会追加一条 record 到数据文件，不在原位置覆盖旧值。内存索引只保存最新 record 的位置，旧 record 后续由 compaction 清理。
 
-**Hint 文件**：每次 compaction 同时写一份 `nosql.hint`（key + offset + length + expireAt），尾部带 `DONE`。下次启动若 hint 完整，直接用 hint 重建内存索引，跳过对主数据文件的全量扫描。
+**二进制 record 格式**
 
-**分片索引（Sharding）**：内存索引切成 16 个 shard，按 FNV hash 路由。每个 shard 各自持锁，并发写不同 shard 互不阻塞。
+每条 record 使用 4 字节大端 body length 作为前缀，body 中包含：
 
-**LRU 热点缓存**：写入和读取后顺手填一份到容量 1000 的 LRU，热点 key 命中时直接走内存。
+```text
+op | keyLen | valueLen | expireAt | key | value
+```
 
-**索引**：内存只存 `key → 文件偏移量 + 长度 + 过期时间`，value 留在文件里，用 `ReadAt` 并发读取，内存占用小。
+因此磁盘 record 边界不依赖换行符，也不依赖空格切分。
 
-**TCP 多客户端 + 连接数上限**：基于 `net` 标准库，每个连接独立 goroutine 处理；用容量 100 的 semaphore 限制最大并发连接，防止连接洪峰打爆 goroutine。
+**内存索引**
 
-**并发安全**：`sync.RWMutex` 分两层 —— 全局 `fileMu` 保护文件句柄切换（compaction 会替换 `writeFile`/`readFile`），shard 级锁保护各自的索引 map。读并发执行，写独占。
+索引保存：
 
-**TTL**：支持给 key 设置过期时间，惰性删除（`Get` 时检查并删除）+ 后台定时清理（每 10s 扫描一次）双策略。
+```text
+key -> offset + length + expireAt
+```
 
-**事务**：基于 undo-log 实现 `begin`/`commit`/`rollback`。事务中第一次修改某个 key 前用 `GetMeta` 备份原状态，`rollback` 时逐个还原，`commit` 直接清空备份；连接意外断开自动回滚未提交事务。
+value 不常驻主索引。`Get` 通过 offset 和 length 从数据文件 `ReadAt` 读取 record。
 
-## 已知限制 / 待解决
+**分片索引**
 
-- **key 和 value 不能含空格**：record 边界已经靠 length-prefix 稳定，但 record 内部 body 仍用 `strings.SplitN(body, " ", 4)` 解析，含空格的 key/value 会切错字段。完整修法是把 body 也改成结构化二进制格式（`| key_sz | val_sz | expireAt | key | val |`）。
+全局索引拆成 16 个 shard，按 key hash 路由。每个 shard 有自己的锁，减少单个全局 map 的锁竞争。
 
-- **事务崩溃后原子性无法保证**：事务期间 Set/Del 立刻写磁盘，undo log 只在内存。崩溃后重启 replay 会使未 commit 的修改永久生效，违反 ACID 原子性。修法：事务期间修改缓存在内存，commit 时一次性写入；或写磁盘时加 BEGIN/COMMIT 标记，replay 时跳过没有 COMMIT 的事务。
+**TTL**
 
-- **TTL 定期清理仍持 shard 写锁**：`CleanupExpired` 现在按 shard 持锁，阻塞范围已经从全局缩到 1/16，但单个 shard 在扫描期间仍阻塞该 shard 的所有读写。修法：分批扫描，批间释放锁。
+`set key value ttl` 会把过期时间写入 record 和内存索引。读取时会惰性检查过期；后台也会每 10 秒扫描 shard，删除已过期 key，并追加 delete record。
 
-- **每次写都启动一个 compaction goroutine**：`Set`/`Del` 末尾的 `go Compaction(...)` 内部用 `CompareAndSwap` 防止并发执行，但写入压力大时会持续创建 goroutine 然后立刻退出。修法：用单独的 compaction 触发器（条件变量 / channel）按需唤醒。
+**Compaction**
 
-## 性能
+当数据文件超过 100 KB 时，写入路径会异步尝试触发 compaction。compaction 会把当前仍有效的 key 重写到 `nosql.tmp`，成功后 rename 替换主数据文件，并重新打开读写文件句柄。
 
-SET QPS: ~58,000 | GET QPS: ~215,000
+**Hint 文件**
 
-(`bench/bench.go`，10 个写连接 × 100 ops，50 个读连接 × 1000 ops。三次取稳定值。SET 比早期下降，主要原因是改成 length-prefix 后多了一次 header 写、且每次写都尝试触发 compaction；GET 因为命中 LRU 路径基本持平。)
+compaction 后会生成 `nosql.hint`，保存 key 对应的 offset、length、expireAt，末尾写入 `DONE`。启动时如果认为 hint 完整，会优先从 hint 恢复索引；否则从主数据文件 replay。
+
+**崩溃恢复**
+
+启动时会检查是否存在残留的 `nosql.tmp`。如果存在，当前实现会直接删除这个临时文件，避免上次未完成的 compaction 临时文件影响启动。
+
+**LRU 基础结构**
+
+项目里实现了容量为 1000 的 LRU cache，`Set` 会写入 LRU，`Del` 和过期删除会移除 LRU 中的 key。当前 `Get` 路径还没有真正优先从 LRU 命中返回，这是后续要修的优化点。
+
+**TCP 多连接**
+
+服务端基于 `net` 标准库实现。每个连接由一个 goroutine 处理，并用容量 100 的 semaphore 限制同时处理的连接数量。
+
+**事务**
+
+事务基于内存 undo log 实现。事务中第一次修改某个 key 前，会通过 `GetMeta` 记录旧值；`rollback` 时按 undo log 还原，`commit` 时丢弃 undo log。连接断开时，如果事务还没提交，会自动 rollback。
+
+## 并发模型
+
+代码里主要有两层锁：
+
+- `fileMu`：保护全局 `readFile`、`writeFile` 以及 compaction 时的文件句柄切换。
+- shard 锁：保护每个 shard 内部的 `index` map。
+
+普通读取会持有 `fileMu.RLock()`，复制索引 entry 后释放 shard 读锁，再通过 `ReadAt` 读取数据。写入、删除、过期清理和 compaction 会持有写锁，保证文件追加、索引更新和文件切换不会并发打架。
+
+## 已知限制 / 待优化
+
+- **LRU 还没有真正接入 Get 快路径**：当前 `Get` 仍然会先读磁盘，最后只调用一次 `lruCache.Get(key)` 调整顺序，返回值没有被使用。后续应把 `LRUCache.Get` 改成 `(string, bool)`，命中时直接返回，磁盘读取成功后再 `Put` 回 LRU。
+
+- **TCP 协议不支持 key/value 中的空格和换行**：底层 record 已经是二进制格式，但网络协议仍用 `strings.Fields` 解析命令，并用换行作为请求边界。因此通过 TCP 写入时，key/value 不能包含空格或换行。
+
+- **hint 完整性校验偏弱**：当前只要文件中出现一行 `DONE` 就认为 hint 完整。更稳妥的做法是要求 `DONE` 是最后一个有效行，或者给 hint 文件加 checksum。
+
+- **hint 解析失败会直接 Fatal**：`loadIndexFromHint` 遇到 offset、length、expireAt 解析错误会退出进程。更合理的做法是返回 error，让 `Open` fallback 到 `rebuildIndexFromLog`。
+
+- **rebuildIndexFromLog 遇到坏 record 会停止 replay**：如果中间某条 record 损坏，当前实现会 `break`，后面的有效 record 不会恢复。更稳妥的做法是能根据 length prefix 跳过坏 record 时继续扫描。
+
+- **每次写都会启动 compaction goroutine**：`Set`/`Del` 末尾都会 `go Compaction(...)`，虽然内部有 CAS 防重入，但高频写入时会产生很多很快退出的 goroutine。后续可以改成常驻 worker + channel 触发。
+
+- **compaction 错误处理还不完整**：部分文件操作错误没有完整清理资源，`Seek` 错误也还没处理。compaction 过程中还会提前更新内存 index，如果后续步骤失败，存在一致性风险。
+
+- **Accept 错误被忽略**：`main.go` 里忽略了 `listen.Accept()` 的 error。listener 关闭或 fd 耗尽时，可能把 nil conn 传入 `HandleConn`。
+
+- **TTL 参数解析错误被忽略**：`set a b abc` 这类输入会因为 `ParseInt` 错误被忽略而变成 ttl=0，也就是永不过期。后续应返回 `wrong input`。
+
+- **事务没有隔离性**：事务期间其他连接仍然可以修改同一个 key。某个事务 rollback 时，可能覆盖其他连接已经提交的写入。
+
+- **事务崩溃后不保证原子性**：undo log 只在内存中。事务中的 `Set`/`Del` 会立即写入 WAL，如果进程崩溃，重启 replay 时未 commit 的修改也可能生效。
+
+- **没有 fsync 策略**：`Write` 成功不等于数据已经真正落盘。进程崩溃或机器断电时，最近写入可能丢失。
+
+## 测试
+
+运行全部测试：
+
+```bash
+go test ./...
+```
+
+运行 benchmark 程序：
+
+```bash
+go run bench/bench.go
+```
+
+当前 benchmark 结果会受到 LRU 是否接入 Get 快路径、compaction 触发频率、磁盘状态和本机环境影响，README 不再写固定 QPS，避免和代码状态脱节。
