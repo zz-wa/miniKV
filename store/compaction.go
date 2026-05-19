@@ -49,13 +49,18 @@ func Compaction(filename string) bool {
 
 			data := encodeRecord(newRecord)
 
-			NewOffset, _ := tmpFile.Seek(0, io.SeekEnd)
+			newOffset, err := tmpFile.Seek(0, io.SeekEnd)
+			if err != nil {
+				shard.Unlock()
+				_ = tmpFile.Close()
+				return false
+			}
 			_, err = tmpFile.Write(data)
 			if err != nil {
 				continue
 			}
 			shard.index[key] = Entry{
-				Offset:   NewOffset,
+				Offset:   newOffset,
 				Length:   int64(recordBodyLen(newRecord)),
 				ExpireAt: en.ExpireAt,
 			}

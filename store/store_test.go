@@ -2,6 +2,7 @@ package store
 
 import (
 	"testing"
+	"time"
 )
 
 func TestSetThenGet(t *testing.T) {
@@ -231,5 +232,22 @@ func TestSetGetValueWithSpace(t *testing.T) {
 	}
 	if got != value {
 		t.Fatalf("got %v, want %v", got, value)
+	}
+}
+
+func TestGetExpiredKey(t *testing.T) {
+	setupTestStore(t)
+
+	err := SetWithExpireAt("key", "value", time.Now().Unix()-1)
+	if err != nil {
+		t.Fatalf("set err: %v", err)
+	}
+
+	got, ok := Get("key")
+	if ok {
+		t.Fatalf("get ok = %v, want false", got)
+	}
+	if got != "" {
+		t.Fatalf("got %q, want \"\"", got)
 	}
 }

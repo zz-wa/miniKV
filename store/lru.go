@@ -25,14 +25,14 @@ func NewLRUCache(capacity int) *LRUCache {
 	}
 }
 
-func (l *LRUCache) Get(key string) string {
+func (l *LRUCache) Get(key string) (string, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if elem, ok := l.cache[key]; ok {
 		l.list.MoveToFront(elem)
-		return elem.Value.(*Pair).value
+		return elem.Value.(*Pair).value, true
 	}
-	return ""
+	return "", false
 }
 
 func (l *LRUCache) Put(key string, value string) {

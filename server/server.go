@@ -51,18 +51,26 @@ func parseCommand(input string) []string {
 
 func handleSet(conn net.Conn, in []string, txn *Txn) {
 	var ttl int64
+	var err error
 	if !validateSetArgs(in) {
 		conn.Write([]byte("wrong input\n"))
 		return
 	}
 	if len(in) == 4 {
-		ttl, _ = strconv.ParseInt(in[3], 10, 64)
+		ttl, err = strconv.ParseInt(in[3], 10, 64)
+		if err != nil {
+			_, err2 := conn.Write([]byte("wrong input\n"))
+			if err2 != nil {
+				return
+			}
+			return
+		}
 	}
 	if txn.IsActive() {
 		txn.RecordFirst(in[1])
 	}
 
-	err := store.Set(in[1], in[2], ttl)
+	err = store.Set(in[1], in[2], ttl)
 	reply(conn, err)
 
 }

@@ -33,7 +33,10 @@ func Open(filename string) error {
 
 	switch hintIsComplete("nosql.hint") {
 	case true:
-		loadIndexFromHint("nosql.hint")
+		err := loadIndexFromHint("nosql.hint")
+		if err != nil {
+			return err
+		}
 	case false:
 		err := rebuildIndexFromLog(filename)
 		if err != nil {
@@ -99,45 +102,54 @@ func Get(key string) (string, bool) {
 		return "", false
 	}
 	fileMu.RLock()
-
 	shard := GetShard(key)
 
 	shard.RLock()
+
 	en, ok := shard.index[key]
 	if !ok {
 		shard.RUnlock()
 		fileMu.RUnlock()
-
 		return "", false
 	}
-	if en.ExpireAt != 0 && time.Now().Unix() > en.ExpireAt {
-		fileMu.RUnlock()
 
+	if en.ExpireAt != 0 && time.Now().Unix() > en.ExpireAt {
 		shard.RUnlock()
+		fileMu.RUnlock()
 		deleteExpired(key)
 		return "", false
 	}
+
+	if value, ok := lruCache.Get(key); ok {
+		shard.RUnlock()
+		fileMu.RUnlock()
+		return value, true
+	}
+
 	buf := make([]byte, lengthPrefixSize+en.Length)
 	shard.RUnlock()
-
 	_, err := readFile.ReadAt(buf, int64(en.Offset))
 	if err != nil && err != io.EOF {
 		fileMu.RUnlock()
+
 		return "", false
 	}
 
 	record, err := decodeRecord(buf)
 	if err != nil && err != io.EOF {
 		fileMu.RUnlock()
+
 		return "", false
 	}
 	if record.Op != OpSet || record.Key != key {
 		fileMu.RUnlock()
+
 		return "", false
 	}
 
-	lruCache.Get(key)
+	lruCache.Put(key, record.Value)
 	fileMu.RUnlock()
+
 	return record.Value, true
 }
 
@@ -238,29 +250,6 @@ func SetWithExpireAt(key, value string, expiredAt int64) error {
 	return setInternal(key, value, expiredAt)
 }
 
-/*
-func tmpIsComplete(filename string) bool {
-	data, _ := os.ReadFile(filename)
-	offset := 0
-	for offset < len(data) {
-		if offset+4 > len(data) {
-			break
-		}
-		bodyLen := int(binary.BigEndian.Uint32(data[offset : offset+4]))
-		if offset+4+bodyLen > len(data) {
-			break
-		}
-		body := string(data[offset+4 : offset+4+bodyLen])
-		l := strings.SplitN(body, " ", 4)
-		if len(l) >= 1 && l[0] == "DONE" {
-			return true
-		}
-		offset += 4 + bodyLen
-	}
-	return false
-}
-*/
-
 func hintIsComplete(filename string) bool {
 	data, _ := os.ReadFile(filename)
 	lines := strings.Split(string(data), "\n")
@@ -283,7 +272,7 @@ func recoverPendingCompaction() {
 	}
 }
 
-func loadIndexFromHint(filename string) {
+func loadIndexFromHint(filename string) error {
 	hintData, _ := os.ReadFile(filename)
 	for _, line := range strings.Split(string(hintData), "\n") {
 		l := strings.SplitN(line, " ", 4)
@@ -293,15 +282,15 @@ func loadIndexFromHint(filename string) {
 
 		offset, err := strconv.ParseInt(l[1], 10, 64)
 		if err != nil {
-			zap.S().Fatal("parse offset fail")
+			return err
 		}
 		length, err := strconv.ParseInt(l[2], 10, 64)
 		if err != nil {
-			zap.S().Fatal("parse length fail")
+			return err
 		}
 		expireAt, err := strconv.ParseInt(l[3], 10, 64)
 		if err != nil {
-			zap.S().Fatal("parse expireAt fail")
+			return err
 		}
 		shard := GetShard(l[0])
 
@@ -311,6 +300,7 @@ func loadIndexFromHint(filename string) {
 			ExpireAt: expireAt,
 		}
 	}
+	return nil
 }
 
 func rebuildIndexFromLog(filename string) error {
@@ -332,7 +322,8 @@ func rebuildIndexFromLog(filename string) error {
 
 		record, err := decodeRecord(data[offset:end])
 		if err != nil {
-			break
+			offset = end
+			continue
 		}
 
 		switch record.Op {
