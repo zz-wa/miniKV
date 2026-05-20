@@ -93,7 +93,7 @@ value 不常驻主索引。`Get` 通过 offset 和 length 从数据文件 `ReadA
 
 **Compaction**
 
-当数据文件超过 100 KB 时，写入路径会异步尝试触发 compaction。compaction 会把当前仍有效的 key 重写到 `nosql.tmp`，成功后 rename 替换主数据文件，并重新打开读写文件句柄。
+当数据文件超过 100 KB 时，写入路径会异步尝试触发 compaction。compaction 流程拆成三步：`shouldCompact` 判断是否需要重写，`buildCompactedFile` 把当前仍有效的 key 写到 `nosql.tmp` 并在临时 slice 里构建新索引，`writeHintFromIndex` 最后输出 hint 文件。tmp 写完后 rename 替换主数据文件，重新打开读写文件句柄，再一次性把新索引 swap 到各 shard。
 
 **Hint 文件**
 
@@ -103,9 +103,9 @@ compaction 后会生成 `nosql.hint`，保存 key 对应的 offset、length、ex
 
 启动时会检查是否存在残留的 `nosql.tmp`。如果存在，当前实现会直接删除这个临时文件，避免上次未完成的 compaction 临时文件影响启动。
 
-**LRU 基础结构**
+**LRU 缓存**
 
-项目里实现了容量为 1000 的 LRU cache，`Set` 会写入 LRU，`Del` 和过期删除会移除 LRU 中的 key。当前 `Get` 路径还没有真正优先从 LRU 命中返回，这是后续要修的优化点。
+项目里实现了容量为 1000 的 LRU cache 并接入了读路径：`Get` 命中索引后会先查 LRU，命中直接返回；miss 才走 `ReadAt` 读磁盘，并把结果回写到 LRU。`Set` 写入新值时也会更新 LRU，`Del` 和过期删除会移除对应 key。
 
 **TCP 多连接**
 
@@ -126,7 +126,7 @@ compaction 后会生成 `nosql.hint`，保存 key 对应的 offset、length、ex
 
 ## 已知限制 / 待优化
 
-- **LRU 还没有真正接入 Get 快路径**：当前 `Get` 仍然会先读磁盘，最后只调用一次 `lruCache.Get(key)` 调整顺序，返回值没有被使用。后续应把 `LRUCache.Get` 改成 `(string, bool)`，命中时直接返回，磁盘读取成功后再 `Put` 回 LRU。
+- **Compaction 后旧 `nosql.hint` 残留**：当前实现是先 rename `nosql.tmp` 替换主数据文件，再写新的 hint 文件。这期间如果崩溃，旧 hint（带 `DONE` 标记）会保留下来，重启时会被当成合法 hint 加载，但里面的 offset 已经和新文件对不上。`recoverPendingCompaction` 目前只清理 `nosql.tmp`，没动 hint。修法是 rename 之前先删掉或 invalidate 旧 hint。
 
 - **TCP 协议不支持 key/value 中的空格和换行**：底层 record 已经是二进制格式，但网络协议仍用 `strings.Fields` 解析命令，并用换行作为请求边界。因此通过 TCP 写入时，key/value 不能包含空格或换行。
 
