@@ -1,9 +1,5 @@
 # miniKV
 
-一个用 Go 从零实现的 KV 存储引擎练习项目。
-
-当前版本重点实现了 append-only WAL、内存索引、TTL、compaction、hint 文件、分片锁和简单 TCP 协议。代码仍然偏学习性质，README 里的“已知限制”部分会保留当前还没处理完的边界问题。
-
 ## 运行
 
 启动服务：
@@ -164,4 +160,3 @@ go test ./...
 go run bench/bench.go
 ```
 
-当前 benchmark 结果会受到 LRU 是否接入 Get 快路径、compaction 触发频率、磁盘状态和本机环境影响，README 不再写固定 QPS，避免和代码状态脱节。
