@@ -1,6 +1,7 @@
 package store
 
 import (
+	"os"
 	"testing"
 	"time"
 )
@@ -249,5 +250,30 @@ func TestGetExpiredKey(t *testing.T) {
 	}
 	if got != "" {
 		t.Fatalf("got %q, want \"\"", got)
+	}
+}
+
+func TestOpenFallBackToLogWhenHintMissing(t *testing.T) {
+	setupTestStore(t)
+	err := Set("key", "value", 0)
+	if err != nil {
+		t.Fatalf("set err: %v", err)
+	}
+	if err := Close(); err != nil {
+		t.Fatalf("close err: %v", err)
+	}
+
+	if err := os.Remove("nosql.hint"); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("delete err: %v", err)
+	}
+	if err := Open("nosql.json"); err != nil {
+		t.Fatalf("reopen err: %v", err)
+	}
+	got, ok := Get("key")
+	if !ok {
+		t.Fatalf("get ok = false, want true")
+	}
+	if got != "value" {
+		t.Fatalf("got %q, want \"value\"", got)
 	}
 }

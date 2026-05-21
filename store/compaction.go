@@ -32,6 +32,7 @@ func Compaction(filename string) bool {
 	if err != nil {
 		return false
 	}
+
 	newWriteFile, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return false

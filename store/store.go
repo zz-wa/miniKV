@@ -31,7 +31,11 @@ func Open(filename string) error {
 
 	lruCache = NewLRUCache(1000)
 
-	switch hintIsComplete("nosql.hint") {
+	ok, err := hintIsComplete("nosql.hint")
+	if err != nil {
+		return err
+	}
+	switch ok {
 	case true:
 		err := loadIndexFromHint("nosql.hint")
 		if err != nil {
@@ -56,10 +60,12 @@ func Open(filename string) error {
 		}
 		return err
 	}
+
 	writeFile = wf
 	readFile = rf
 
 	go CleanupExpired()
+
 	return nil
 
 }
@@ -250,15 +256,21 @@ func SetWithExpireAt(key, value string, expiredAt int64) error {
 	return setInternal(key, value, expiredAt)
 }
 
-func hintIsComplete(filename string) bool {
-	data, _ := os.ReadFile(filename)
+func hintIsComplete(filename string) (bool, error) {
+	data, err := os.ReadFile(filename)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
 	lines := strings.Split(string(data), "\n")
 	for _, line := range lines {
 		if line == "DONE" {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 func recoverPendingCompaction() {
