@@ -1,13 +1,20 @@
 package store
 
-import "time"
+import (
+	"time"
+)
 
-func CleanupExpired() {
+func CleanupExpired(stopCh <-chan struct{}) {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
-	for range ticker.C {
-		for _, shards := range Shards {
-			cleanupShard(shards)
+	for {
+		select {
+		case <-ticker.C:
+			for _, shards := range Shards {
+				cleanupShard(shards)
+			}
+		case <-stopCh:
+			return
 		}
 	}
 }

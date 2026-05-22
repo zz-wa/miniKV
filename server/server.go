@@ -9,7 +9,12 @@ import (
 )
 
 func HandleConn(conn net.Conn) {
-	defer conn.Close()
+	defer func(conn net.Conn) {
+		err := conn.Close()
+		if err != nil {
+			conn.Write([]byte("关闭失败"))
+		}
+	}(conn)
 	reader := bufio.NewReader(conn)
 	txn := &Txn{}
 	defer func() {
