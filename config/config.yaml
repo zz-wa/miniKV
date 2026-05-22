@@ -1,0 +1,11 @@
+server:
+  addr: "127.0.0.1:8080"
+
+store:
+  data_file: "nosql.json"
+  hint_file: "nosql.hint"
+  tmp_file: "nosql.tmp"
+  lru_size: 1000
+  ttl_scan_interval: "10s"
+
+

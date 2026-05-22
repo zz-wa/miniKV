@@ -27,19 +27,19 @@ func hintIsComplete(filename string) (bool, error) {
 	return false, nil
 }
 
-func recoverPendingCompaction() {
-	_, err := os.Stat("nosql.tmp")
+func recoverPendingCompaction(filename string) {
+	_, err := os.Stat(filename)
 
 	if err == nil {
-		err := os.Remove("nosql.tmp")
+		err := os.Remove(filename)
 		if err != nil {
 			zap.S().Fatal("remove nosql.tmp fail")
 		}
 	}
 }
 
-func loadIndexFromHint(filename string) error {
-	hintData, _ := os.ReadFile(filename)
+func loadIndexFromHint(cfg Config) error {
+	hintData, _ := os.ReadFile(cfg.HintFile)
 	for _, line := range strings.Split(string(hintData), "\n") {
 		l := strings.SplitN(line, " ", 4)
 		if len(l) < 4 {
@@ -69,12 +69,12 @@ func loadIndexFromHint(filename string) error {
 	return nil
 }
 
-func rebuildIndexFromLog(filename string) error {
-	err := os.Remove("nosql.hint")
+func rebuildIndexFromLog(cfg Config) error {
+	err := os.Remove(cfg.HintFile)
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	data, _ := os.ReadFile(filename)
+	data, _ := os.ReadFile(cfg.DataFile)
 	offset := 0
 	for offset < len(data) {
 		if offset+lengthPrefixSize > len(data) {

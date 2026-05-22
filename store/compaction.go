@@ -7,7 +7,7 @@ import (
 	"os"
 )
 
-func Compaction(filename string) bool {
+func Compaction(cfg Config) bool {
 
 	if !isCompaction.CompareAndSwap(false, true) {
 		return false
@@ -15,29 +15,29 @@ func Compaction(filename string) bool {
 	defer isCompaction.Store(false)
 	fileMu.Lock()
 	defer fileMu.Unlock()
-	if !shouldCompact(filename) {
+	if !shouldCompact(cfg.DataFile) {
 		return false
 	}
 
-	newIndex, err := buildCompactedFile("nosql.tmp")
+	newIndex, err := buildCompactedFile(cfg.TmpFile)
 	if err != nil {
 		return false
 	}
-	err = os.Remove("nosql.hint")
+	err = os.Remove(cfg.HintFile)
 	if err != nil && !os.IsNotExist(err) {
 		return false
 	}
 
-	err = os.Rename("nosql.tmp", filename)
+	err = os.Rename(cfg.TmpFile, cfg.DataFile)
 	if err != nil {
 		return false
 	}
 
-	newWriteFile, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	newWriteFile, err := os.OpenFile(cfg.DataFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return false
 	}
-	newReadFile, err := os.OpenFile(filename, os.O_RDONLY, 0644)
+	newReadFile, err := os.OpenFile(cfg.DataFile, os.O_RDONLY, 0644)
 	if err != nil {
 		_ = newWriteFile.Close()
 		return false
@@ -56,7 +56,7 @@ func Compaction(filename string) bool {
 		shard.index = newIndex[i]
 		shard.Unlock()
 	}
-	err = writeHintFromIndex("nosql.hint", newIndex)
+	err = writeHintFromIndex(cfg.HintFile, newIndex)
 	if err != nil {
 		return true
 	}

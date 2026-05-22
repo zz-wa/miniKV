@@ -34,7 +34,7 @@ func setInternal(key, value string, expiredAt int64) error {
 		ExpireAt: expiredAt,
 	}
 	lruCache.Put(key, value)
-	go Compaction("nosql.json")
+	go Compaction(currentConfig)
 	return nil
 }
 
@@ -126,7 +126,7 @@ func delLocked(shard *Shard, key string) error {
 	delete(shard.index, key)
 
 	lruCache.Remove(key)
-	go Compaction("nosql.json")
+	go Compaction(currentConfig)
 	return nil
 
 }

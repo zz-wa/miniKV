@@ -97,7 +97,7 @@ func TestRecoverAfterSet(t *testing.T) {
 	if err := Close(); err != nil {
 		t.Fatalf("close err: %v", err)
 	}
-	err = Open("nosql.json")
+	err = Open(DefaultConfig())
 	if err != nil {
 		t.Fatalf("reopen err: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestRecoverAfterOverwrite(t *testing.T) {
 		t.Fatalf("close err: %v", err)
 	}
 
-	err = Open("nosql.json")
+	err = Open(DefaultConfig())
 	if err != nil {
 		t.Fatalf("reopen err: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestRecoverAfterDelete(t *testing.T) {
 	if err := Close(); err != nil {
 		t.Fatalf("close err: %v", err)
 	}
-	err = Open("nosql.json")
+	err = Open(DefaultConfig())
 	if err != nil {
 		t.Fatalf("reopen err: %v", err)
 	}
@@ -202,7 +202,7 @@ func TestRecoverAfterDeleteThenSet(t *testing.T) {
 		t.Fatalf("close err: %v", err)
 	}
 
-	err = Open("nosql.json")
+	err = Open(DefaultConfig())
 	if err != nil {
 		t.Fatalf("reopen err: %v", err)
 	}
@@ -266,7 +266,7 @@ func TestOpenFallBackToLogWhenHintMissing(t *testing.T) {
 	if err := os.Remove("nosql.hint"); err != nil && !os.IsNotExist(err) {
 		t.Fatalf("delete err: %v", err)
 	}
-	if err := Open("nosql.json"); err != nil {
+	if err := Open(DefaultConfig()); err != nil {
 		t.Fatalf("reopen err: %v", err)
 	}
 	got, ok := Get("key")

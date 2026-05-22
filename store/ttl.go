@@ -4,8 +4,8 @@ import (
 	"time"
 )
 
-func CleanupExpired(stopCh <-chan struct{}) {
-	ticker := time.NewTicker(10 * time.Second)
+func CleanupExpired(cfg Config, stopCh <-chan struct{}) {
+	ticker := time.NewTicker(cfg.TTLScanInternal)
 	defer ticker.Stop()
 	for {
 		select {

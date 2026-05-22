@@ -19,36 +19,38 @@ var readFile *os.File
 var fileMu sync.RWMutex
 var ttlWg sync.WaitGroup
 
-func Open(filename string) error {
+func Open(cfg Config) error {
+	currentConfig = cfg
+
 	for i := 0; i < 16; i++ {
 		Shards[i] = NewShard()
 	}
-	recoverPendingCompaction()
+	recoverPendingCompaction(cfg.TmpFile)
 
-	lruCache = NewLRUCache(1000)
+	lruCache = NewLRUCache(cfg.LRUSize)
 
-	ok, err := hintIsComplete("nosql.hint")
+	ok, err := hintIsComplete(cfg.HintFile)
 	if err != nil {
 		return err
 	}
 	switch ok {
 	case true:
-		err := loadIndexFromHint("nosql.hint")
+		err := loadIndexFromHint(cfg)
 		if err != nil {
 			return err
 		}
 	case false:
-		err := rebuildIndexFromLog(filename)
+		err := rebuildIndexFromLog(cfg)
 		if err != nil {
 			return err
 		}
 	}
 
-	wf, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	wf, err := os.OpenFile(cfg.DataFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return err
 	}
-	rf, err := os.OpenFile(filename, os.O_RDONLY, 0644)
+	rf, err := os.OpenFile(cfg.DataFile, os.O_RDONLY, 0644)
 	if err != nil {
 		closeErr := wf.Close()
 		if closeErr != nil {
@@ -63,7 +65,7 @@ func Open(filename string) error {
 	ttlWg.Add(1)
 	go func() {
 		defer ttlWg.Done()
-		CleanupExpired(stopCh)
+		CleanupExpired(cfg, stopCh)
 	}()
 
 	return nil

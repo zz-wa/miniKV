@@ -23,7 +23,8 @@ func setupTestStore(t *testing.T) {
 		}
 		_ = os.Chdir(oldWd)
 	})
-	err = Open("nosql.json")
+
+	err = Open(DefaultConfig())
 	if err != nil {
 		t.Fatalf("open err: %v", err)
 	}
